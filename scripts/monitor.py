@@ -1,97 +1,311 @@
-import json, os, time, html
+
+import json
+import os
+import time
+import html
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
 import requests
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-APPS = json.loads((ROOT / 'apps.json').read_text(encoding='utf-8'))['apps']
-SLEEP_PHRASES = ('app has gone to sleep', 'this app is asleep', 'get this app back up')
-STARTING_PHRASES = ('baking your app', 'please wait while your app is starting')
+APPS = json.loads(
+    (ROOT / "apps.json").read_text(encoding="utf-8")
+)["apps"]
 
-def valid_url(url, domain):
-    p = urlparse(url)
-    return p.scheme == 'https' and bool(p.hostname) and (p.hostname == domain.lstrip('.') or p.hostname.endswith(domain)) and not p.username
+DIAGNOSTICS = ROOT / "diagnostics"
+DIAGNOSTICS.mkdir(exist_ok=True)
 
-def check(page, app, timeout_seconds=180, retries=2):
+SLEEP_PHRASES = (
+    "app has gone to sleep",
+    "this app is asleep",
+    "get this app back up",
+)
+
+STARTING_PHRASES = (
+    "baking your app",
+    "please wait while your app is starting",
+)
+
+BLOCK_PHRASES = (
+    "this site is blocked",
+    "cisco umbrella",
+    "security threat",
+    "access denied",
+)
+
+SELECTORS = (
+    '[data-testid="stAppViewContainer"]',
+    '[data-testid="stMain"]',
+    '[data-testid="stApp"]',
+    ".stApp",
+)
+
+
+def valid_url(url):
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    return (
+        parsed.scheme == "https"
+        and host.endswith(".streamlit.app")
+        and not parsed.username
+        and not parsed.password
+    )
+
+
+def check(app):
     start = time.monotonic()
-    result = {'name': app['name'], 'url': app['url'], 'github': app.get('github', ''), 'status': 'FAILED', 'detail': '', 'seconds': None}
-    notes = []
-    woken = False
-    for attempt in range(1, retries + 1):
+    name = app["name"]
+    url = app["url"]
+
+    result = {
+        "name": name,
+        "url": url,
+        "github": app.get("github", ""),
+        "status": "FAILED",
+        "detail": "",
+        "seconds": None,
+    }
+
+    safe_name = "".join(
+        c if c.isalnum() else "_" for c in name
+    )
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
         try:
-            page.goto(app['url'], wait_until='domcontentloaded', timeout=60000)
-            deadline = time.monotonic() + timeout_seconds
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+
+            deadline = time.monotonic() + 90
+            woken = False
+
             while time.monotonic() < deadline:
-                body = page.locator('body').inner_text(timeout=15000).lower()
-                if any(s in body for s in SLEEP_PHRASES):
-                    button = page.get_by_role('button', name='Yes, get this app back up!', exact=False)
+                body = page.locator("body").inner_text(
+                    timeout=10000
+                ).lower()
+
+                if any(x in body for x in BLOCK_PHRASES):
+                    result["detail"] = (
+                        "Security block detected: "
+                        + body[:250]
+                    )
+                    break
+
+                if any(x in body for x in SLEEP_PHRASES):
+                    button = page.get_by_role(
+                        "button",
+                        name="Yes, get this app back up!",
+                        exact=False,
+                    )
+
                     if button.count() and button.first.is_visible():
                         button.first.click(timeout=10000)
                         woken = True
-                        notes.append('Wake button clicked')
-                    page.wait_for_timeout(5000)
+
+                    page.wait_for_timeout(4000)
                     continue
-                if any(s in body for s in STARTING_PHRASES):
-                    page.wait_for_timeout(5000)
+
+                if any(x in body for x in STARTING_PHRASES):
+                    page.wait_for_timeout(4000)
                     continue
-                # Check several Streamlit UI elements, not only one version-specific test ID.
-                selectors = ('[data-testid="stAppViewContainer"]', '[data-testid="stMain"]', '[data-testid="stApp"]', '.stApp')
-                for selector in selectors:
+
+                for selector in SELECTORS:
                     locator = page.locator(selector).first
                     if locator.count() and locator.is_visible():
-                        result['status'] = 'WOKEN' if woken else 'LOADED'
-                        result['detail'] = '; '.join(notes + [f'Visible Streamlit UI ({selector}); not a functional test'])
-                        result['seconds'] = round(time.monotonic() - start, 1)
-                        return result
+                        result["status"] = (
+                            "WOKEN" if woken else "LOADED"
+                        )
+                        result["detail"] = (
+                            f"Visible Streamlit UI: {selector}"
+                        )
+                        break
+
+                if result["status"] != "FAILED":
+                    break
+
                 page.wait_for_timeout(4000)
-            notes.append(f'Attempt {attempt}: no detectable Streamlit UI within {timeout_seconds}s')
+
+            if result["status"] == "FAILED":
+                if not result["detail"]:
+                    result["detail"] = (
+                        "No Streamlit UI detected within 90 seconds"
+                    )
+
+                result["detail"] += (
+                    f"; title={page.title()[:100]}"
+                    f"; final_url={page.url}"
+                )
+
+                page.screenshot(
+                    path=str(
+                        DIAGNOSTICS / f"{safe_name}.png"
+                    ),
+                    full_page=True,
+                    timeout=10000,
+                )
+
         except Exception as exc:
-            notes.append(f'Attempt {attempt}: {type(exc).__name__}: {str(exc)[:160]}')
-        if attempt < retries:
-            page.wait_for_timeout(5000)
-    result['detail'] = '; '.join(notes)
-    result['seconds'] = round(time.monotonic() - start, 1)
-    return result
+            result["detail"] = (
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            )
 
-def email_report(results, timestamp):
-    key, sender, recipient = (os.getenv(k, '') for k in ('BREVO_API_KEY', 'BREVO_FROM_EMAIL', 'REPORT_TO_EMAIL'))
-    if not all((key, sender, recipient)):
-        print('Email skipped: missing BREVO_API_KEY, BREVO_FROM_EMAIL, or REPORT_TO_EMAIL')
-        return False
-    ok = sum(r['status'] in ('LOADED', 'WOKEN') for r in results)
-    rows = ''.join('<tr><td>'+html.escape(r['name'])+'</td><td>'+html.escape(r['status'])+'</td><td>'+html.escape(r['detail'])+'</td><td>'+str(r['seconds'])+'s</td></tr>' for r in results)
-    body = f'<h2>Streamlit Portfolio Monitor</h2><p>{html.escape(timestamp)} UTC — {ok}/{len(results)} apps loaded</p><table border="1" cellpadding="8"><tr><th>App</th><th>Status</th><th>Details</th><th>Duration</th></tr>{rows}</table><p>LOADED/WOKEN indicates a visible Streamlit UI, not full application functionality.</p>'
-    response = requests.post('https://api.brevo.com/v3/smtp/email', headers={'api-key':key, 'accept':'application/json','content-type':'application/json'}, json={'sender':{'email':sender},'to':[{'email':recipient}],'subject':f'Streamlit Monitor: {ok}/{len(results)} loaded','htmlContent':body}, timeout=25)
-    response.raise_for_status()
-    print('Brevo accepted email report')
-    return True
+            try:
+                page.screenshot(
+                    path=str(
+                        DIAGNOSTICS / f"{safe_name}.png"
+                    ),
+                    full_page=True,
+                    timeout=10000,
+                )
+            except Exception:
+                pass
 
-def main():
-    enabled = [a for a in APPS if a.get('enabled', True)]
-    for app in enabled:
-        if not valid_url(app['url'], '.streamlit.app'):
-            raise ValueError(f'Invalid Streamlit URL for {app["name"]}')
-    results = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            for app in enabled:
-                page = browser.new_page()
-                try:
-                    result = check(page, app)
-                    results.append(result)
-                    print(f'{result["name"]}: {result["status"]} — {result["detail"]}', flush=True)
-                finally:
-                    page.close()
         finally:
             browser.close()
-    timestamp = datetime.now(timezone.utc).isoformat()
-    (ROOT / 'report.json').write_text(json.dumps({'checked_at':timestamp,'results':results}, indent=2, ensure_ascii=False), encoding='utf-8')
-    email_report(results, timestamp)
-    if any(r['status'] == 'FAILED' for r in results):
-        raise SystemExit('One or more apps did not load; see report.json')
 
-if __name__ == '__main__':
+    result["seconds"] = round(
+        time.monotonic() - start, 1
+    )
+
+    return result
+
+
+def email_report(results, timestamp):
+    key = os.getenv("BREVO_API_KEY", "")
+    sender = os.getenv("BREVO_FROM_EMAIL", "")
+    recipient = os.getenv("REPORT_TO_EMAIL", "")
+
+    if not all((key, sender, recipient)):
+        print("Email skipped: missing Brevo configuration")
+        return False
+
+    ok = sum(
+        r["status"] in ("LOADED", "WOKEN")
+        for r in results
+    )
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(r['name'])}</td>"
+        f"<td>{html.escape(r['status'])}</td>"
+        f"<td>{html.escape(r['detail'])}</td>"
+        f"<td>{r['seconds']}s</td>"
+        "</tr>"
+        for r in results
+    )
+
+    body = (
+        "<h2>Streamlit Portfolio Monitor</h2>"
+        f"<p>{html.escape(timestamp)} UTC</p>"
+        f"<p>{ok}/{len(results)} apps loaded</p>"
+        "<table border='1' cellpadding='8'>"
+        "<tr><th>App</th><th>Status</th>"
+        "<th>Details</th><th>Duration</th></tr>"
+        f"{rows}</table>"
+        "<p>LOADED/WOKEN confirms a visible Streamlit "
+        "interface, not full application functionality.</p>"
+    )
+
+    response = requests.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={
+            "api-key": key,
+            "accept": "application/json",
+            "content-type": "application/json",
+        },
+        json={
+            "sender": {"email": sender},
+            "to": [{"email": recipient}],
+            "subject": (
+                f"Streamlit Monitor: {ok}/{len(results)} loaded"
+            ),
+            "htmlContent": body,
+        },
+        timeout=25,
+    )
+
+    response.raise_for_status()
+    print("Brevo accepted email report")
+    return True
+
+
+def main():
+    enabled = [
+        app for app in APPS
+        if app.get("enabled", True)
+    ]
+
+    for app in enabled:
+        if not valid_url(app["url"]):
+            raise ValueError(
+                f"Invalid Streamlit URL: {app['name']}"
+            )
+
+    results = []
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {
+            executor.submit(check, app): app
+            for app in enabled
+        }
+
+        for future in as_completed(futures):
+            app = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {
+                    "name": app["name"],
+                    "url": app["url"],
+                    "github": app.get("github", ""),
+                    "status": "FAILED",
+                    "detail": f"Worker error: {exc}",
+                    "seconds": None,
+                }
+
+            results.append(result)
+            print(
+                f"{result['name']}: "
+                f"{result['status']} — {result['detail']}",
+                flush=True,
+            )
+
+    order = {
+        app["name"]: index
+        for index, app in enumerate(enabled)
+    }
+    results.sort(key=lambda r: order[r["name"]])
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    (ROOT / "report.json").write_text(
+        json.dumps(
+            {
+                "checked_at": timestamp,
+                "results": results,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    email_report(results, timestamp)
+
+    if any(r["status"] == "FAILED" for r in results):
+        raise SystemExit(
+            "One or more applications failed; see report.json"
+        )
+
+
+if __name__ == "__main__":
     main()
