@@ -135,11 +135,11 @@ def check(app):
                 marker = APP_MARKERS.get(app_key)
 
                 if marker and marker.lower() in body:
-                result["status"] = "WOKEN" if woken else "LOADED"
-                result["detail"] = (
-                f"Application content detected: {marker}"
-                )
-                break
+                    result["status"] = "WOKEN" if woken else "LOADED"
+                    result["detail"] = (
+                        f"Application content detected: {marker}"
+                    )
+                    break
 
                 for selector in SELECTORS:
                     locator = page.locator(selector).first
