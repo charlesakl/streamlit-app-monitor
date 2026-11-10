@@ -3,7 +3,8 @@
     {"name":"Agentic AI — SRE Transformation","url":"https://agentic-ai-sre-transformation.streamlit.app/","github":"https://github.com/charlesakl/agentic-ai-sre-transformation","enabled":true},
     {"name":"AI Stock Finder","url":"https://ai-stock-finder.streamlit.app/","github":"https://github.com/charlesakl/ai-stock-finder","enabled":true},
     {"name":"AI Job Hunter","url":"https://ai-job-hunter.streamlit.app/","github":"https://github.com/charlesakl/ai-job-hunter","enabled":true},
-    {"name":"NFL Fantasy Agent","url":"https://nfl-fantasy-agent.streamlit.app/","github":"https://github.com/charlesakl/nfl-fantasy-agent","enabled":true},
+    {"name":"NFL Fantasy Agent","url":"https://nfl-fantasy-agent.streamlit.app/","github":"https://github.com/charlesakl/nfl-fantasy-agent","enabled":true},  
+    {"name": "CyberCert Academy","url": "https://cybercert-academy.streamlit.app/","github": "https://github.com/charlesakl/cybercert-academy","enabled": true},
     {"name":"AI Email Drafting Assistant","url":"https://ai-email-drafting-assistant-rkupn6trqfto6ckhcs2vvc.streamlit.app/","github":"https://github.com/charlesakl/ai-email-drafting-assistant","enabled":true}
   ]
 }
