@@ -103,6 +103,23 @@ def check(app):
                     timeout=10000
                 ).lower()
 
+                if time.monotonic() + 10 >= deadline:
+                    print(
+                        f"DEBUG {name}: body_length={len(body)}, "
+                        f"frames={len(page.frames)}, "
+                        f"body_preview={body[:300]!r}",
+                        flush=True,
+                    )
+                    for frame in page.frames:
+                        try:
+                            print(
+                                f"DEBUG {name}: frame={frame.url}, "
+                                f"streamlit_elements={frame.locator('.stApp').count()}",
+                                flush=True,
+                            )
+                        except Exception as exc:
+                            print(f"DEBUG {name}: frame error={exc}", flush=True)
+
                 if any(x in body for x in BLOCK_PHRASES):
                     result["detail"] = (
                         "Security block detected: "
