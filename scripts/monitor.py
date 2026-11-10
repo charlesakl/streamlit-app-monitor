@@ -45,6 +45,16 @@ SELECTORS = (
 )
 
 
+APP_MARKERS = {
+    "agentic-ai-sre-transformation": "Reliability at a glance",
+    "ai-stock-finder": "Find opportunities",
+    "ai-job-hunter": "Daily job recommendations",
+    "nfl-fantasy-agent": "NFL Fantasy Intelligence",
+    "ai-email-drafting-assistant": "Paste the email you received",
+}
+
+
+
 def valid_url(url):
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -85,7 +95,7 @@ def check(app):
                 timeout=30000,
             )
 
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + 45
             woken = False
 
             while time.monotonic() < deadline:
@@ -117,6 +127,19 @@ def check(app):
                 if any(x in body for x in STARTING_PHRASES):
                     page.wait_for_timeout(4000)
                     continue
+
+
+                # Recognize known application content.
+                hostname = urlparse(url).hostname or ""
+                app_key = hostname.removesuffix(".streamlit.app")
+                marker = APP_MARKERS.get(app_key)
+
+                if marker and marker.lower() in body:
+                result["status"] = "WOKEN" if woken else "LOADED"
+                result["detail"] = (
+                f"Application content detected: {marker}"
+                )
+                break
 
                 for selector in SELECTORS:
                     locator = page.locator(selector).first
