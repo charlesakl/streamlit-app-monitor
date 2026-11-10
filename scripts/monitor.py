@@ -158,15 +158,22 @@ def check(app):
                     )
                     break
 
-                for selector in SELECTORS:
-                    locator = page.locator(selector).first
-                    if locator.count() and locator.is_visible():
-                        result["status"] = (
-                            "WOKEN" if woken else "LOADED"
-                        )
-                        result["detail"] = (
-                            f"Visible Streamlit UI: {selector}"
-                        )
+                # Check all frames, including the Streamlit application iframe.
+                for frame in page.frames:
+                    for selector in SELECTORS:
+                        locator = frame.locator(selector).first
+
+                        if locator.count() and locator.is_visible():
+                            result["status"] = (
+                                "WOKEN" if woken else "LOADED"
+                            )
+                            result["detail"] = (
+                                f"Visible Streamlit UI detected "
+                                f"in frame: {frame.url}"
+                            )
+                            break
+
+                    if result["status"] != "FAILED":
                         break
 
                 if result["status"] != "FAILED":
